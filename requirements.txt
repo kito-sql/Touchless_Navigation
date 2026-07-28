@@ -1,0 +1,8 @@
+# Gesture Kiosk Dependencies
+opencv-python-headless>=4.9.0
+mediapipe>=0.10.14
+websockets>=12.0
+pynput>=1.7.0
+PyQt5>=5.15.0
+qasync>=0.27.0
+numpy>=1.24.0
