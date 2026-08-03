@@ -66,8 +66,3 @@ python gesture_engine.py
 ```
 > For Windows High-DPI details and Win32 native mouse fallback configuration, see [`Windows_Version/README.md`](file:///C:/Users/kito/python-v1/Windows_Version/README.md).
 
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please open an issue or submit a pull request detailing your hardware platform (Raspberry Pi model or Windows version, camera model) and proposed changes.

@@ -62,20 +62,4 @@ Project layout
 
 - gesture_engine.py — headless tracking engine, MediaPipe integration, WebSocket server
 - overlay.py — transparent PyQt5 overlay and WebSocket client
-- system_architecture_report.md — design, algorithm, and configuration reference
-
-Contributing
-
-Contributions welcome. Please open issues for bugs or feature requests and create small, focused pull requests. When opening issues or PRs, include platform and hardware details (Raspberry Pi model, OS version, camera model). If you plan to contribute code, follow these guidelines:
-
-- Fork the repository and create a feature branch for your changes.
-- Keep changes small and focused; include tests where appropriate.
-- Document runtime requirements and configuration changes.
-
-License
-
-This repository does not include a license file by default. If you want to adopt a license, add a LICENSE file (for example, an MIT license) and update this README to reference it.
-
-Contact
-
-Open issues or contact the maintainer via the repository's GitHub profile.
+- system_architecture_report.md — design, algorithm, and configuration reference
