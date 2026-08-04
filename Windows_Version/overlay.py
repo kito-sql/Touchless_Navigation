@@ -55,30 +55,7 @@ class OverlayWindow(QWidget):
         self._shared_state = shared_state
         self._geometry_callback = geometry_callback
 
-        flags = (
-            Qt.FramelessWindowHint |
-            Qt.WindowStaysOnTopHint |
-            Qt.Tool |
-            Qt.WindowTransparentForInput
-        )
-
-        self.setWindowFlags(flags)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WA_NoSystemBackground, True)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.showFullScreen()
-
-        self._screen = QApplication.primaryScreen()
-        screen_geo = self._screen.geometry()
-        self.setGeometry(screen_geo)
-        self.raise_()
-
-        self._screen.geometryChanged.connect(self._on_screen_geometry_changed)
-        self._geo_debounce = QTimer(self)
-        self._geo_debounce.setSingleShot(True)
-        self._geo_debounce.timeout.connect(self._flush_geometry_update)
         self._pending_geo = None
-
         self._landmarks: List[List[float]] = []
         self._world_landmarks: List[List[float]] = []
         self._hand_detected: bool = False
@@ -92,15 +69,36 @@ class OverlayWindow(QWidget):
         self._dwell_progress: float = 0.0
         self._depth_z: float = 1.0
 
+        self._fade_alpha: float = 0.0
+        self._click_pulse: float = 0.0
+        self._ghost_protect: int = 0
+        self._new_data: bool = False
+
+        flags = (
+            Qt.FramelessWindowHint |
+            Qt.WindowStaysOnTopHint |
+            Qt.Tool |
+            Qt.WindowTransparentForInput
+        )
+
+        self.setWindowFlags(flags)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        self._screen = QApplication.primaryScreen()
+        screen_geo = self._screen.geometry()
+        self.setGeometry(screen_geo)
+
         self._engine_scale_x: float = float(self.width())
         self._engine_scale_y: float = float(self.height())
         self._engine_w: int = self.width()
         self._engine_h: int = self.height()
 
-        self._fade_alpha: float = 0.0
-        self._click_pulse: float = 0.0
-        self._ghost_protect: int = 0
-        self._new_data: bool = False
+        self._screen.geometryChanged.connect(self._on_screen_geometry_changed)
+        self._geo_debounce = QTimer(self)
+        self._geo_debounce.setSingleShot(True)
+        self._geo_debounce.timeout.connect(self._flush_geometry_update)
 
         if self._geometry_callback:
             geo = self._screen.geometry()
@@ -112,6 +110,9 @@ class OverlayWindow(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(REFRESH_MS)
+
+        self.showFullScreen()
+        self.raise_()
 
     def _start_ws_client(self) -> None:
         def run():
@@ -220,7 +221,7 @@ class OverlayWindow(QWidget):
             self._new_data = False
 
     def paintEvent(self, _event) -> None:
-        if self._fade_alpha < 0.01:
+        if getattr(self, '_fade_alpha', 0.0) < 0.01:
             return
 
         w, h = self.width(), self.height()
