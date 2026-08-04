@@ -237,7 +237,7 @@ class OverlayWindow(QWidget):
         alpha = self._fade_alpha
         lms = self._landmarks
 
-        if len(lms) < 21:
+        if len(lms) < 21 or not all(isinstance(lm, (list, tuple)) and len(lm) >= 2 for lm in lms):
             return
 
         anchor_norm_x, anchor_norm_y = lms[8][0], lms[8][1]
