@@ -21,7 +21,7 @@ import sys
 import urllib.request
 import queue
 from collections import deque
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Tuple
 
 import cv2
 cv2.setNumThreads(2)
@@ -67,16 +67,76 @@ except ImportError:
     _MouseController = None
     log.warning("pynput not installed — falling back to Windows API mouse injection.")
 
-def _win32_inject_click(x: int, y: int) -> None:
-    """Windows native API mouse click injection fallback when pynput is unavailable."""
+def _is_admin() -> bool:
     if sys.platform == "win32":
         try:
             import ctypes
-            user32 = ctypes.windll.user32
-            user32.SetCursorPos(x, y)
-            user32.mouse_event(0x0002, 0, 0, 0, 0) # MOUSEEVENTF_LEFTDOWN
-            user32.mouse_event(0x0004, 0, 0, 0, 0) # MOUSEEVENTF_LEFTUP
-            log.info("Win32 mouse click injected at (%d, %d)", x, y)
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            return False
+    return False
+
+if sys.platform == "win32":
+    import ctypes
+    _ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+
+    class _MOUSEINPUT(ctypes.Structure):
+        _fields_ = [
+            ("dx", ctypes.c_long),
+            ("dy", ctypes.c_long),
+            ("mouseData", ctypes.c_ulong),
+            ("dwFlags", ctypes.c_ulong),
+            ("time", ctypes.c_ulong),
+            ("dwExtraInfo", _ULONG_PTR),
+        ]
+
+    class _INPUT_UNION(ctypes.Union):
+        _fields_ = [("mi", _MOUSEINPUT)]
+
+    class _INPUT(ctypes.Structure):
+        _fields_ = [
+            ("type", ctypes.c_ulong),
+            ("union", _INPUT_UNION),
+        ]
+
+    _INPUT_MOUSE = 0
+    _MOUSEEVENTF_MOVE = 0x0001
+    _MOUSEEVENTF_LEFTDOWN = 0x0002
+    _MOUSEEVENTF_LEFTUP = 0x0004
+    _MOUSEEVENTF_ABSOLUTE = 0x8000
+    _MOUSEEVENTF_VIRTUALDESK = 0x4000
+
+    def _win32_send_mouse_input(x: int, y: int, flags: int) -> None:
+        user32 = ctypes.windll.user32
+        vx = user32.GetSystemMetrics(76)
+        vy = user32.GetSystemMetrics(77)
+        vw = user32.GetSystemMetrics(78)
+        vh = user32.GetSystemMetrics(79)
+        if vw <= 0: vw = user32.GetSystemMetrics(0)
+        if vh <= 0: vh = user32.GetSystemMetrics(1)
+
+        abs_x = int(((x - vx) * 65535) / vw) if vw > 0 else 0
+        abs_y = int(((y - vy) * 65535) / vh) if vh > 0 else 0
+
+        inp = _INPUT()
+        inp.type = _INPUT_MOUSE
+        inp.union.mi.dx = abs_x
+        inp.union.mi.dy = abs_y
+        inp.union.mi.dwFlags = flags | _MOUSEEVENTF_ABSOLUTE | _MOUSEEVENTF_VIRTUALDESK
+        inp.union.mi.time = 0
+        inp.union.mi.dwExtraInfo = 0
+        user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
+
+def _win32_inject_click(x: int, y: int) -> None:
+    """Windows native API SendInput mouse click injection for OSK compatibility."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.user32.SetCursorPos(x, y)
+            _win32_send_mouse_input(x, y, _MOUSEEVENTF_MOVE | _MOUSEEVENTF_LEFTDOWN)
+            time.sleep(0.015)
+            _win32_send_mouse_input(x, y, _MOUSEEVENTF_LEFTUP)
+            log.info("Win32 SendInput mouse click injected at (%d, %d)", x, y)
         except Exception as e:
             log.warning("Win32 click injection failed: %s", e)
 
@@ -174,10 +234,15 @@ class DisplayManager:
         orientation = "landscape" if self.target_width > self.target_height else "portrait"
         margins = CAMERA_MARGINS.get(orientation, CAMERA_MARGINS["landscape"])
         _ax_range = margins["x"]
-        _ay_range = (_ax_range * CAMERA_WIDTH * self.target_height) / (CAMERA_HEIGHT * self.target_width)
+        denom = CAMERA_HEIGHT * self.target_width
+        if denom == 0:
+            return
+        _ay_range = (_ax_range * CAMERA_WIDTH * self.target_height) / denom
         if _ay_range > 0.95:
             _ay_range = 0.95
-            _ax_range = (_ay_range * CAMERA_HEIGHT * self.target_width) / (CAMERA_WIDTH * self.target_height)
+            denom_alt = CAMERA_WIDTH * self.target_height
+            if denom_alt > 0:
+                _ax_range = (_ay_range * CAMERA_HEIGHT * self.target_width) / denom_alt
 
         with self._lock:
             self.active_x_min = round((1.0 - _ax_range) / 2, 4)
@@ -726,15 +791,15 @@ class GestureProcessor:
                     pass
 
         if cursor_state == "CLICK" and self._prev_cursor_state != "CLICK":
-            if self._mouse is not None and _Button is not None:
+            if sys.platform == "win32":
+                _win32_inject_click(screen_x, screen_y)
+            elif self._mouse is not None and _Button is not None:
                 try:
                     self._mouse.position = (screen_x, screen_y)
                     self._mouse.click(_Button.left)
                     log.info("Pynput click injected at (%d, %d)", screen_x, screen_y)
                 except Exception as e:
                     log.warning("Pynput click failed: %s", e)
-            elif sys.platform == "win32":
-                _win32_inject_click(screen_x, screen_y)
 
         self._prev_cursor_state = cursor_state
 
@@ -1010,6 +1075,8 @@ async def ws_handler(websocket) -> None:
                     display_manager.set_external_geometry(w, h)
                 except (KeyError, TypeError, ValueError):
                     continue
+    except websockets.exceptions.ConnectionClosed:
+        pass
     finally:
         _connected_clients.discard(websocket)
 
@@ -1040,6 +1107,18 @@ async def run_server(shared_state: GestureState, stop_event: threading.Event) ->
 
 def main() -> None:
     log.info("Starting GestureEngine (Windows Environment)...")
+    if sys.platform == "win32":
+        if _is_admin():
+            log.info("Running with Administrator privileges (OSK & UIPI bypass enabled).")
+        else:
+            log.warning(
+                "\n============================================================\n"
+                "NOTICE: Process is NOT running as Administrator.\n"
+                "Windows UIPI security will block clicks sent to On-Screen Keyboard (osk.exe).\n"
+                "To interact with On-Screen Keyboard, please run Python as Administrator.\n"
+                "============================================================"
+            )
+
     if not validate_camera_access():
         raise SystemExit("Camera initialization failed")
 

@@ -78,13 +78,16 @@ class OverlayWindow(QWidget):
             Qt.FramelessWindowHint |
             Qt.WindowStaysOnTopHint |
             Qt.Tool |
-            Qt.WindowTransparentForInput
+            Qt.WindowTransparentForInput |
+            Qt.WindowDoesNotAcceptFocus |
+            Qt.BypassWindowManagerHint
         )
 
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
 
         self._screen = QApplication.primaryScreen()
         screen_geo = self._screen.geometry()
@@ -111,8 +114,51 @@ class OverlayWindow(QWidget):
         self._timer.timeout.connect(self._tick)
         self._timer.start(REFRESH_MS)
 
-        self.showFullScreen()
+        self.show()
         self.raise_()
+        self._apply_win32_styles()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._apply_win32_styles()
+
+    def _apply_win32_styles(self) -> None:
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                from ctypes import wintypes
+                hwnd = int(self.winId())
+                GWL_EXSTYLE = -20
+                WS_EX_TOPMOST = 0x00000008
+                WS_EX_TRANSPARENT = 0x00000020
+                WS_EX_LAYERED = 0x00080000
+                WS_EX_NOACTIVATE = 0x08000000
+                WS_EX_TOOLWINDOW = 0x00000080
+
+                ex_style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                new_ex_style = ex_style | WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+                ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_ex_style)
+
+                # Try placing window into higher Windows Z-Band (System Overlay / Pointer / Keyboard)
+                try:
+                    user32 = ctypes.windll.user32
+                    if hasattr(user32, "SetWindowBand"):
+                        user32.SetWindowBand.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.DWORD]
+                        user32.SetWindowBand.restype = wintypes.BOOL
+                        for band in [11, 8, 7, 3, 2]: # ZBID_POINTER, ZBID_KEYBOARD, ZBID_SYSTEM_OVERLAY, ZBID_IMM, ZBID_UIACCESS
+                            if user32.SetWindowBand(hwnd, 0, band):
+                                break
+                except Exception:
+                    pass
+
+                HWND_TOPMOST = -1
+                SWP_NOMOVE = 0x0002
+                SWP_NOSIZE = 0x0001
+                SWP_NOACTIVATE = 0x0010
+                SWP_SHOWWINDOW = 0x0040
+                ctypes.windll.user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+            except Exception:
+                pass
 
     def _start_ws_client(self) -> None:
         def run():
@@ -220,6 +266,15 @@ class OverlayWindow(QWidget):
             self.update()
             self._new_data = False
 
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                hwnd = int(self.winId())
+                # SWP_NOMOVE (0x0002) | SWP_NOSIZE (0x0001) | SWP_NOACTIVATE (0x0010)
+                ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0002 | 0x0001 | 0x0010)
+            except Exception:
+                pass
+
     def paintEvent(self, _event) -> None:
         if getattr(self, '_fade_alpha', 0.0) < 0.01:
             return
@@ -245,10 +300,18 @@ class OverlayWindow(QWidget):
         anchor_screen_x = float(getattr(self, '_skel_anchor_x', self._cursor_x))
         anchor_screen_y = float(getattr(self, '_skel_anchor_y', self._cursor_y))
 
+        if math.isnan(anchor_screen_x) or math.isinf(anchor_screen_x):
+            anchor_screen_x = float(w / 2)
+        if math.isnan(anchor_screen_y) or math.isinf(anchor_screen_y):
+            anchor_screen_y = float(h / 2)
+
         def clamp(v: float, lo: float, hi: float) -> float:
+            if math.isnan(v) or math.isinf(v):
+                return lo
             return max(lo, min(hi, v))
 
-        depth_val = max(0.65, min(1.6, float(getattr(self, '_depth_z', 1.0))))
+        raw_depth = getattr(self, '_depth_z', 1.0)
+        depth_val = max(0.65, min(1.6, float(raw_depth if isinstance(raw_depth, (int, float)) and not math.isnan(raw_depth) and not math.isinf(raw_depth) else 1.0)))
         SKELETON_SCALE = clamp(depth_val ** 0.5, 0.80, 1.30)
 
         base_size = min(self._engine_w, self._engine_h)
@@ -262,8 +325,9 @@ class OverlayWindow(QWidget):
         z_scale_factors: List[float] = []
 
         for lm in lms:
-            nx, ny = lm[0], lm[1]
-            nz = lm[2] if len(lm) > 2 else 0.0
+            nx = float(lm[0]) if not (math.isnan(lm[0]) or math.isinf(lm[0])) else 0.0
+            ny = float(lm[1]) if not (math.isnan(lm[1]) or math.isinf(lm[1])) else 0.0
+            nz = float(lm[2]) if len(lm) > 2 and not (math.isnan(lm[2]) or math.isinf(lm[2])) else 0.0
 
             dx_norm = nx - anchor_norm_x
             dy_norm = ny - anchor_norm_y
